@@ -1,16 +1,13 @@
 #import <UIKit/UIKit.h>
 
-@interface HVSonMenuView : UIView
-@property (nonatomic, copy) void (^onClose)(void);
-@end
+@interface HVSonEngine : NSObject
++ (instancetype)shared;
+@property (nonatomic, copy) void (^onStatus)(NSString *msg);
 
-@interface HVSonToggleButton : UIButton
-@end
+- (void)feature0AutoImportImages;   // auto nhập ảnh vào các lớp
+- (void)feature1ShowLastCode;       // code gần nhất
+- (void)feature2AutoBeatSplit;      // auto chia beat
+- (void)feature3AutoMultiScene;     // auto nhiều phân cảnh
 
-@interface HVSonRootViewController : UIViewController
-@property (nonatomic, strong) HVSonToggleButton *toggleButton;
-@property (nonatomic, strong) HVSonMenuView      *menuView;
-@end
-
-@interface HVSonWindow : UIWindow
++ (void)installRuntimeHooks;
 @end
