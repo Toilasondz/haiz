@@ -49,7 +49,12 @@ jobs:
 
             clang -dynamiclib -fobjc-arc -O2 -arch $ARCH -mios-version-min=14.0 \
               -isysroot "$SDK" \
-              -framework UIKit -framework Foundation -framework AVFoundation -framework CoreImage \
+              -framework UIKit \
+              -framework Foundation \
+              -framework AVFoundation \
+              -framework CoreImage \
+              -framework CoreGraphics \
+              -framework QuartzCore \
               -install_name "@executable_path/HVSonTool.dylib" \
               build/HVSonMenu-$ARCH.o build/HVSonEngine-$ARCH.o build/HVSonTweak-$ARCH.o \
               -o build/HVSonTool-$ARCH.dylib
