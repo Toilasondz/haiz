@@ -2,6 +2,87 @@
 #import <AVFoundation/AVFoundation.h>
 #import <CoreImage/CoreImage.h>
 #import <objc/runtime.h>
+#import <string.h>
+
+#pragma mark - Safe invoke via NSInvocation (hỗ trợ primitive return)
+
+static NSInvocation *HVInvPrep(id obj, NSString *selName, NSMethodSignature **outSig) {
+    if (!obj || selName.length == 0) return nil;
+    SEL sel = NSSelectorFromString(selName);
+    if (![obj respondsToSelector:sel]) return nil;
+    NSMethodSignature *sig = [obj methodSignatureForSelector:sel];
+    if (!sig) return nil;
+    NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+    [inv setTarget:obj];
+    [inv setSelector:sel];
+    if (outSig) *outSig = sig;
+    return inv;
+}
+
+static id HV0_Obj(id obj, NSString *selName) {
+    NSMethodSignature *sig = nil;
+    NSInvocation *inv = HVInvPrep(obj, selName, &sig);
+    if (!inv) return nil;
+    [inv invoke];
+    if (strcmp(sig.methodReturnType, @encode(id)) != 0) return nil;
+    __unsafe_unretained id r = nil;
+    [inv getReturnValue:&r];
+    return r;
+}
+
+static NSInteger HV0_Int(id obj, NSString *selName) {
+    NSMethodSignature *sig = nil;
+    NSInvocation *inv = HVInvPrep(obj, selName, &sig);
+    if (!inv) return 0;
+    [inv invoke];
+    NSInteger v = 0;
+    [inv getReturnValue:&v];
+    return v;
+}
+
+static BOOL HV0_Bool(id obj, NSString *selName) {
+    NSMethodSignature *sig = nil;
+    NSInvocation *inv = HVInvPrep(obj, selName, &sig);
+    if (!inv) return NO;
+    [inv invoke];
+    BOOL v = NO;
+    [inv getReturnValue:&v];
+    return v;
+}
+
+static void HV0_Void(id obj, NSString *selName) {
+    NSInvocation *inv = HVInvPrep(obj, selName, NULL);
+    if (!inv) return;
+    [inv invoke];
+}
+
+static id HV1_Obj(id obj, NSString *selName, id arg) {
+    NSMethodSignature *sig = nil;
+    NSInvocation *inv = HVInvPrep(obj, selName, &sig);
+    if (!inv) return nil;
+    [inv setArgument:&arg atIndex:2];
+    [inv invoke];
+    if (strcmp(sig.methodReturnType, @encode(id)) != 0) return nil;
+    __unsafe_unretained id r = nil;
+    [inv getReturnValue:&r];
+    return r;
+}
+
+static void HV1_Void(id obj, NSString *selName, id arg) {
+    NSInvocation *inv = HVInvPrep(obj, selName, NULL);
+    if (!inv) return;
+    [inv setArgument:&arg atIndex:2];
+    [inv invoke];
+}
+
+/* selectLayer:bordered: — NSUInteger + BOOL */
+static void HVSelectLayerBordered(id editor, NSUInteger idx, BOOL bordered) {
+    NSInvocation *inv = HVInvPrep(editor, @"selectLayer:bordered:", NULL);
+    if (!inv) return;
+    [inv setArgument:&idx atIndex:2];
+    [inv setArgument:&bordered atIndex:3];
+    [inv invoke];
+}
 
 #pragma mark - Helpers
 
@@ -10,12 +91,17 @@ static UIViewController *HVTopVC(void) {
     if (@available(iOS 13.0, *)) {
         for (UIScene *s in UIApplication.sharedApplication.connectedScenes) {
             if (![s isKindOfClass:UIWindowScene.class]) continue;
-            for (UIWindow *w in ((UIWindowScene *)s).windows)
+            for (UIWindow *w in ((UIWindowScene *)s).windows) {
                 if (w.isKeyWindow) { keyWin = w; break; }
+            }
             if (keyWin) break;
         }
     }
-    if (!keyWin) keyWin = UIApplication.sharedApplication.keyWindow;
+    if (!keyWin) {
+        for (UIWindow *w in UIApplication.sharedApplication.windows) {
+            if (w.isKeyWindow) { keyWin = w; break; }
+        }
+    }
     UIViewController *vc = keyWin.rootViewController;
     while (vc.presentedViewController) vc = vc.presentedViewController;
     if ([vc isKindOfClass:UINavigationController.class])
@@ -23,26 +109,6 @@ static UIViewController *HVTopVC(void) {
     if ([vc isKindOfClass:UITabBarController.class])
         vc = ((UITabBarController *)vc).selectedViewController;
     return vc;
-}
-
-static id HVCall0(id obj, NSString *sel) {
-    if (!obj) return nil;
-    SEL s = NSSelectorFromString(sel);
-    if (![obj respondsToSelector:s]) return nil;
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
-    return [obj performSelector:s];
-#pragma clang diagnostic pop
-}
-
-static id HVCall(id obj, NSString *sel, id arg) {
-    if (!obj) return nil;
-    SEL s = NSSelectorFromString(sel);
-    if (![obj respondsToSelector:s]) return nil;
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
-    return [obj performSelector:s withObject:arg];
-#pragma clang diagnostic pop
 }
 
 static UIView *HVFindSubview(UIView *root, Class cls, NSInteger depth) {
@@ -55,11 +121,17 @@ static UIView *HVFindSubview(UIView *root, Class cls, NSInteger depth) {
     return nil;
 }
 
+/* FIX: không dùng ("_" + ivarName) nữa */
 static BOOL HVPressButtonInIvar(id obj, NSString *ivarName) {
     if (!obj || ivarName.length == 0) return NO;
-    Ivar iv = class_getInstanceVariable([obj class], [("_" + ivarName) UTF8String]);
-    if (!iv) iv = class_getInstanceVariable([obj class], [ivarName UTF8String]);
+
+    NSString *underscored = [@"_" stringByAppendingString:ivarName];
+    Ivar iv = class_getInstanceVariable([obj class], underscored.UTF8String);
+    if (!iv) {
+        iv = class_getInstanceVariable([obj class], ivarName.UTF8String);
+    }
     if (!iv) return NO;
+
     id btn = object_getIvar(obj, iv);
     if ([btn isKindOfClass:UIButton.class]) {
         [btn sendActionsForControlEvents:UIControlEventTouchUpInside];
@@ -68,7 +140,6 @@ static BOOL HVPressButtonInIvar(id obj, NSString *ivarName) {
     return NO;
 }
 
-// Chuyển ảnh -> NSData (giống helper_12a34)
 static NSData *HVImageToPNG(id image) {
     if (!image) return nil;
     if ([image isKindOfClass:NSData.class]) return image;
@@ -102,8 +173,8 @@ static void HVSaveLastQR(NSData *png) {
 #pragma mark - Engine
 
 @interface HVSonEngine ()
-@property (nonatomic, weak)   id mlEditor;            // MultiLayerWizEffectVC
-@property (nonatomic, strong) id pickedResponse;      // ClipPickerResponse clone
+@property (nonatomic, weak)   id mlEditor;
+@property (nonatomic, strong) id pickedResponse;
 @property (nonatomic, weak)   id beatSplitView;
 @property (nonatomic, assign) NSUInteger beatIndex;
 @property (nonatomic, assign) NSUInteger beatTotal;
@@ -131,10 +202,8 @@ static void HVSaveLastQR(NSData *png) {
 - (void)feature1ShowLastCode {
     [self status:@"Đang quét code gần nhất..."];
 
-    // 1. Đọc ảnh cuối cùng đã lưu (nếu có)
     NSData *lastData = [NSData dataWithContentsOfFile:HVLastQRPath()];
 
-    // 2. Nếu không có, quét Documents thư mục ảnh mới nhất
     if (lastData.length == 0) {
         NSString *docs = [NSHomeDirectory() stringByAppendingPathComponent:@"Documents"];
         NSArray *files = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:docs error:nil];
@@ -162,7 +231,6 @@ static void HVSaveLastQR(NSData *png) {
         return;
     }
 
-    // 3. Quét QR từ ảnh
     UIImage *ui = [UIImage imageWithData:lastData];
     if (!ui) { [self alert:@"Thông báo" msg:@"Ảnh không đọc được."]; return; }
 
@@ -172,7 +240,6 @@ static void HVSaveLastQR(NSData *png) {
         return;
     }
 
-    // 4. Hiển thị QR cho user
     HVSaveLastQR(lastData);
     [self showQRPreview:ui text:qrText];
     [self status:[NSString stringWithFormat:@"QR: %.40s…", qrText.UTF8String]];
@@ -194,19 +261,23 @@ static void HVSaveLastQR(NSData *png) {
 }
 
 - (void)showQRPreview:(UIImage *)img text:(NSString *)text {
-    UIViewController *vc = HVTopVC();
-    if (!vc) return;
-    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"Code gần nhất"
-                                                                message:text
-                                                         preferredStyle:UIAlertControllerStyleAlert];
-    CGFloat w = 220;
-    UIImageView *iv = [[UIImageView alloc] initWithFrame:CGRectMake(0, 0, w, w)];
-    iv.contentMode = UIViewContentModeScaleAspectFit;
-    iv.image = img;
-    [ac.view addSubview:iv];
-    // resize alert (cách đơn giản)
-    [ac addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
-    [vc presentViewController:ac animated:YES completion:nil];
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIViewController *vc = HVTopVC();
+        if (!vc) return;
+        UIAlertController *ac = [UIAlertController
+            alertControllerWithTitle:@"Code gần nhất"
+                             message:text ?: @"(trống)"
+                      preferredStyle:UIAlertControllerStyleAlert];
+        [ac addAction:[UIAlertAction actionWithTitle:@"Copy"
+                                               style:UIAlertActionStyleDefault
+                                             handler:^(UIAlertAction *a) {
+            [UIPasteboard generalPasteboard].string = text ?: @"";
+        }]];
+        [ac addAction:[UIAlertAction actionWithTitle:@"OK"
+                                               style:UIAlertActionStyleCancel
+                                             handler:nil]];
+        [vc presentViewController:ac animated:YES completion:nil];
+    });
 }
 
 #pragma mark - FEATURE 2: Auto chia beat
@@ -220,28 +291,31 @@ static void HVSaveLastQR(NSData *png) {
         return;
     }
     UIView *split = HVFindSubview(vc.view, splitCls ?: UIView.class, 6);
-    if (!split) { [self alert:@"Thông báo" msg:@"Không tìm thấy chức năng chia beat gốc của Video Star."]; return; }
+    if (!split) {
+        [self alert:@"Thông báo" msg:@"Không tìm thấy chức năng chia beat gốc của Video Star."];
+        return;
+    }
 
-    // Bật beat mode nếu chưa bật
-    NSNumber *on = HVCall0(split, @"beatModeOn");
-    if (on && !on.boolValue) HVCall0(split, @"toggleBeatMode");
+    if (!HV0_Bool(split, @"beatModeOn")) {
+        HV0_Void(split, @"toggleBeatMode");
+    }
 
-    // Lấy danh sách beat
-    NSArray *times = HVCall0(split, @"splitTimes");
+    NSArray *times = HV0_Obj(split, @"splitTimes");
     NSUInteger total = times.count;
+
     if (total == 0) {
-        // Nếu beat mode chưa gen, chờ 1 nhịp rồi thử lại
         self.beatSplitView = split;
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 800 * NSEC_PER_MSEC),
                        dispatch_get_main_queue(), ^{
-            NSArray *t2 = HVCall0(split, @"splitTimes");
+            NSArray *t2 = HV0_Obj(split, @"splitTimes");
             if (t2.count == 0) {
                 [self alert:@"Thông báo" msg:@"Chưa có beat nào được phát hiện."];
                 return;
             }
             self.beatTotal = t2.count;
             self.beatIndex = 0;
-            [self status:[NSString stringWithFormat:@"Đang xử lý %lu beat...", (unsigned long)t2.count]];
+            [self status:[NSString stringWithFormat:@"Đang xử lý %lu beat...",
+                          (unsigned long)t2.count]];
             [self beatNextStep];
         });
         return;
@@ -257,20 +331,18 @@ static void HVSaveLastQR(NSData *png) {
 - (void)beatNextStep {
     if (!self.beatSplitView) return;
 
-    // Bước 1: nếu còn beat → nhảy tới beat kế
     if (self.beatIndex < self.beatTotal) {
         BOOL jumped = NO;
         if ([self.beatSplitView respondsToSelector:NSSelectorFromString(@"jumpToNextBeat")]) {
-            HVCall0(self.beatSplitView, @"jumpToNextBeat");
+            HV0_Void(self.beatSplitView, @"jumpToNextBeat");
             jumped = YES;
         } else if ([self.beatSplitView respondsToSelector:NSSelectorFromString(@"setSplitPoint")]) {
-            HVCall0(self.beatSplitView, @"setSplitPoint");
+            HV0_Void(self.beatSplitView, @"setSplitPoint");
             jumped = YES;
         }
         if (!jumped) HVPressButtonInIvar(self.beatSplitView, @"nextButton");
 
         self.beatIndex++;
-        // đợi animation native trước khi bước tiếp
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 180 * NSEC_PER_MSEC),
                        dispatch_get_main_queue(), ^{
             [self beatNextStep];
@@ -278,11 +350,10 @@ static void HVSaveLastQR(NSData *png) {
         return;
     }
 
-    // Bước 2: đã queue đủ beat → gọi split native
     [self status:@"Đang gọi lệnh chia..."];
     BOOL splitCalled = NO;
     if ([self.beatSplitView respondsToSelector:NSSelectorFromString(@"doSplit")]) {
-        HVCall0(self.beatSplitView, @"doSplit");
+        HV0_Void(self.beatSplitView, @"doSplit");
         splitCalled = YES;
     } else {
         splitCalled = HVPressButtonInIvar(self.beatSplitView, @"splitButton");
@@ -292,7 +363,6 @@ static void HVSaveLastQR(NSData *png) {
         return;
     }
 
-    // Bước 3: chờ sceneCount tăng lên để confirm
     [self beatWaitForCompletion:self.beatTotal];
 }
 
@@ -304,16 +374,17 @@ static void HVSaveLastQR(NSData *png) {
         __strong typeof(weak) s = weak;
         if (!s) return;
         UIViewController *vc = HVTopVC();
-        id project = HVCall0(vc, @"project");
-        NSNumber *scenes = HVCall0(project, @"sceneCount");
+        id project = HV0_Obj(vc, @"project");
+        NSInteger scenes = HV0_Int(project, @"sceneCount");
+
         if (tries++ >= 120) {
-            [s alert:@"Thông báo" msg:@"Video Star chưa hoàn tất thao tác chia beat. Kiểm tra lại phân cảnh."];
+            [s alert:@"Thông báo"
+                  msg:@"Video Star chưa hoàn tất thao tác chia beat. Kiểm tra lại phân cảnh."];
             poll = nil;
             return;
         }
-        if (scenes && scenes.unsignedIntegerValue > expected) {
-            [s status:[NSString stringWithFormat:@"Chia beat xong: %lu phân cảnh.",
-                        (unsigned long)scenes.unsignedIntegerValue]];
+        if (scenes > (NSInteger)expected) {
+            [s status:[NSString stringWithFormat:@"Chia beat xong: %ld phân cảnh.", (long)scenes]];
             poll = nil;
             return;
         }
@@ -335,42 +406,44 @@ static void HVSaveLastQR(NSData *png) {
     self.mlEditor = vc;
     [self status:@"Mở bộ chọn ảnh/video native..."];
 
-    // Trigger bộ chọn native của Video Star
     if ([vc respondsToSelector:NSSelectorFromString(@"pickNewContent")]) {
-        HVCall0(vc, @"pickNewContent");
+        HV0_Void(vc, @"pickNewContent");
     } else {
         [self alert:@"Thông báo" msg:@"Không tìm thấy bộ chọn nội dung gốc của Video Star."];
     }
 }
 
-// Hook được cài từ +installRuntimeHooks (xem dưới)
 - (void)handlePickedResponse:(id)response editor:(id)editor {
     if (!editor || editor != self.mlEditor) return;
     self.pickedResponse = response;
-    id engine = HVCall0(editor, @"getMultiLayerEngine");
-    if (!engine) { [self alert:@"Thông báo" msg:@"Không lấy được engine đa lớp."]; return; }
 
-    // Gom các layer có media/ảnh
+    id engine = HV0_Obj(editor, @"getMultiLayerEngine");
+    if (!engine) {
+        [self alert:@"Thông báo" msg:@"Không lấy được engine đa lớp."];
+        return;
+    }
+
     self.mediaApplyEngine = engine;
     self.mediaTargets = [NSMutableArray array];
     self.mediaApplyIndex = 0;
     self.mediaApplyTotal = 0;
 
-    NSNumber *numLayers = HVCall0(engine, @"numActiveLayers");
-    NSUInteger maxLayers = numLayers ? numLayers.unsignedIntegerValue : 30;
-    for (NSUInteger i = 0; i < MAX(maxLayers, 1); i++) {
+    NSInteger n = HV0_Int(engine, @"numActiveLayers");
+    NSUInteger maxLayers = (n > 0) ? (NSUInteger)n : 30;
+
+    for (NSUInteger i = 0; i < maxLayers; i++) {
         NSNumber *idx = @(i);
-        id asset = HVCall(engine, @"assetForLayer:", idx);
-        id layer = HVCall(engine, @"layerAtLayerNum:", idx);
-        UIImage *img = HVCall0(layer, @"layerImage");
+        id asset   = HV1_Obj(engine, @"assetForLayer:", idx);
+        id layer   = HV1_Obj(engine, @"layerAtLayerNum:", idx);
+        UIImage *img = HV0_Obj(layer, @"layerImage");
+
         BOOL hasMedia = asset || img;
         if (!hasMedia) continue;
-        // Bỏ qua null / 3D / particle / gif / drawing
-        NSNumber *isNull = HVCall0(layer, @"isNullLayer");
-        if (isNull.boolValue) continue;
-        NSNumber *is3D = HVCall0(layer, @"is3DLayer");
-        if (is3D.boolValue) continue;
-        [self.mediaTargets addObject:@{@"index": idx, @"layer": layer ?: NSNull.null}];
+        if (HV0_Bool(layer, @"isNullLayer")) continue;
+        if (HV0_Bool(layer, @"is3DLayer"))   continue;
+
+        [self.mediaTargets addObject:@{@"index": idx,
+                                       @"layer": layer ?: NSNull.null}];
     }
 
     self.mediaApplyTotal = self.mediaTargets.count;
@@ -378,7 +451,8 @@ static void HVSaveLastQR(NSData *png) {
         [self alert:@"Thông báo" msg:@"Không tìm thấy lớp media nào để thay."];
         return;
     }
-    [self status:[NSString stringWithFormat:@"Đang thay %lu lớp...", (unsigned long)self.mediaApplyTotal]];
+    [self status:[NSString stringWithFormat:@"Đang thay %lu lớp...",
+                  (unsigned long)self.mediaApplyTotal]];
     [self applyNextLayer];
 }
 
@@ -394,16 +468,17 @@ static void HVSaveLastQR(NSData *png) {
     id editor = self.mlEditor;
     id layer = ([target[@"layer"] isKindOfClass:NSNull.class]) ? nil : target[@"layer"];
 
-    // 1. Chọn layer trong editor native
-    HVCall(editor, @"selectLayer:bordered:", idx);
-    if (![editor respondsToSelector:NSSelectorFromString(@"presentMLLayerButtonsCollectionViewItemLayerEditTitleViewWithMultiLayerLayer:")]) {
-        // không có API native → thử replay response trực tiếp nếu layer đúng class
+    HVSelectLayerBordered(editor, idx.unsignedIntegerValue, NO);
+
+    if (![editor respondsToSelector:
+          NSSelectorFromString(@"presentMLLayerButtonsCollectionViewItemLayerEditTitleViewWithMultiLayerLayer:")]) {
         [self tryDirectReplay:editor];
         return;
     }
-    HVCall(editor, @"presentMLLayerButtonsCollectionViewItemLayerEditTitleViewWithMultiLayerLayer:", layer ?: NSNull.null);
+    HV1_Void(editor,
+             @"presentMLLayerButtonsCollectionViewItemLayerEditTitleViewWithMultiLayerLayer:",
+             layer ?: NSNull.null);
 
-    // 2. Chờ popup native mở rồi bấm nút "Replace Content"
     [self waitAndPressReplace:editor retries:0];
 }
 
@@ -414,7 +489,6 @@ static void HVSaveLastQR(NSData *png) {
         [self applyNextLayer];
         return;
     }
-    // Tìm CustomPopup trên top VC
     UIViewController *vc = HVTopVC();
     UIView *popup = nil;
     Class popupCls = NSClassFromString(@"CustomPopup");
@@ -422,26 +496,28 @@ static void HVSaveLastQR(NSData *png) {
 
     if (!popup) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 100 * NSEC_PER_MSEC),
-                       dispatch_get_main_queue(), ^{ [self waitAndPressReplace:editor retries:tries + 1]; });
+                       dispatch_get_main_queue(), ^{
+            [self waitAndPressReplace:editor retries:tries + 1];
+        });
         return;
     }
 
-    // Bấm nút "Replace Content" / "Thay nội dung"
-    BOOL pressed = [self pressButtonInPopup:popup titles:@[@"Replace Content", @"Replace",
-                                                           @"Thay nội dung", @"Thay"]];
+    BOOL pressed = [self pressButtonInPopup:popup
+                                     titles:@[@"Replace Content", @"Replace",
+                                              @"Thay nội dung", @"Thay"]];
     if (!pressed) {
         [self status:@"Không thấy nút Thay nội dung — dùng replay trực tiếp."];
         [self tryDirectReplay:editor];
         return;
     }
 
-    // 3. Replay pickedWithClipPickerResponse: cho layer này
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 250 * NSEC_PER_MSEC),
-                   dispatch_get_main_queue(), ^{ [self tryDirectReplay:editor]; });
+                   dispatch_get_main_queue(), ^{
+        [self tryDirectReplay:editor];
+    });
 }
 
 - (BOOL)pressButtonInPopup:(UIView *)popup titles:(NSArray<NSString *> *)titles {
-    // Tìm UIButton trong popup, so sánh title đã chuẩn hoá
     NSMutableArray *all = [NSMutableArray array];
     [self collectButtons:popup into:all];
     for (UIButton *btn in all) {
@@ -463,7 +539,8 @@ static void HVSaveLastQR(NSData *png) {
 
 - (NSString *)normalize:(NSString *)s {
     if (!s) return @"";
-    NSString *folded = [s stringByFoldingWithOptions:NSCaseInsensitiveSearch | NSDiacriticInsensitiveSearch
+    NSString *folded = [s stringByFoldingWithOptions:
+                        NSCaseInsensitiveSearch | NSDiacriticInsensitiveSearch
                                               locale:[NSLocale localeWithLocaleIdentifier:@"vi_VN"]];
     return folded.lowercaseString;
 }
@@ -473,49 +550,49 @@ static void HVSaveLastQR(NSData *png) {
         [self applyNextLayer];
         return;
     }
-    // Clone response qua init mới (nếu có)
     id clone = [self cloneResponse:self.pickedResponse];
     if (!clone) {
         [self applyNextLayer];
         return;
     }
     if ([editor respondsToSelector:NSSelectorFromString(@"pickedWithClipPickerResponse:")]) {
-        HVCall(editor, @"pickedWithClipPickerResponse:", clone);
+        HV1_Void(editor, @"pickedWithClipPickerResponse:", clone);
     }
-    // chờ animation, layer kế
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 300 * NSEC_PER_MSEC),
-                   dispatch_get_main_queue(), ^{ [self applyNextLayer]; });
+                   dispatch_get_main_queue(), ^{
+        [self applyNextLayer];
+    });
 }
 
 - (id)cloneResponse:(id)resp {
     Class cls = NSClassFromString(@"ClipPickerResponse")
              ?: NSClassFromString(@"_TtC10Video_Star18ClipPickerResponse");
     if (!cls || !resp) return nil;
-    NSNumber *type = HVCall0(resp, @"clipPickerResponseType");
-    NSNumber *idx  = HVCall0(resp, @"clipIndex");
-    if (!type || !idx) return resp;
-    id alloc = [cls alloc];
+
+    NSInteger type = HV0_Int(resp, @"clipPickerResponseType");
+    NSInteger idx  = HV0_Int(resp, @"clipIndex");
+
     SEL initSel = NSSelectorFromString(@"initWithClipPickerResponseType:clipIndex:");
-    if ([alloc respondsToSelector:initSel]) {
-        NSMethodSignature *sig = [alloc methodSignatureForSelector:initSel];
-        NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
-        [inv setTarget:alloc];
-        [inv setSelector:initSel];
-        NSInteger t = type.integerValue, i = idx.integerValue;
-        [inv setArgument:&t atIndex:2];
-        [inv setArgument:&i atIndex:3];
-        [inv invoke];
-        __unsafe_unretained id ret = nil;
-        [inv getReturnValue:&ret];
-        return ret;
-    }
-    return resp;
+    id alloc = [cls alloc];
+    if (![alloc respondsToSelector:initSel]) return resp;
+
+    NSMethodSignature *sig = [alloc methodSignatureForSelector:initSel];
+    NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+    [inv setTarget:alloc];
+    [inv setSelector:initSel];
+    [inv setArgument:&type atIndex:2];
+    [inv setArgument:&idx  atIndex:3];
+    [inv invoke];
+
+    __unsafe_unretained id ret = nil;
+    [inv getReturnValue:&ret];
+    return ret;
 }
 
 - (void)finishApplyLayers {
     [self status:[NSString stringWithFormat:@"Đã thay nội dung cho %lu lớp.",
                   (unsigned long)self.mediaApplyTotal]];
-    self.mediaApplyDone ? self.mediaApplyDone(self.mediaApplyTotal) : (void)0;
+    if (self.mediaApplyDone) self.mediaApplyDone(self.mediaApplyTotal);
     self.mediaApplyEngine = nil;
     self.mediaTargets = nil;
     self.pickedResponse = nil;
@@ -535,63 +612,10 @@ static void HVSaveLastQR(NSData *png) {
         return;
     }
 
-    // 1. Mở panel chọn range (dùng UI native của Video Star)
-    HVCall0(vc, @"showMergeScenes");
-
-    // 2. Hiển thị hướng dẫn; sau khi user chọn range, gọi tiếp qua nút OK
-    UIAlertController *ac = [UIAlertController
-        alertControllerWithTitle:@"Chọn phân cảnh"
-                         message:@"Chọn điểm bắt đầu và kết thúc trong Hợp nhất phân cảnh, rồi bấm OK để bắt đầu."
-                  preferredStyle:UIAlertControllerStyleAlert];
-    [ac addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
-        [self continueMultiSceneAfterRange:vc];
-    }]];
-    [ac addAction:[UIAlertAction actionWithTitle:@"Hủy" style:UIAlertActionStyleCancel handler:nil]];
-    [HVTopVC() presentViewController:ac animated:YES completion:nil];
-}
-
-- (void)continueMultiSceneAfterRange:(UIViewController *)review {
-    // Đọc startScene / lastScene mà panel native đã ghi
-    NSNumber *start = [self kvcNum:review key:@"startScene"];
-    NSNumber *last  = [self kvcNum:review key:@"lastScene"];
-    if (!start || !last || last.unsignedIntegerValue < start.unsignedIntegerValue) {
-        [self alert:@"Thông báo" msg:@"Chưa chọn được phạm vi hợp lệ. Hãy chọn lại."];
-        return;
-    }
-    NSUInteger total = last.unsignedIntegerValue - start.unsignedIntegerValue + 1;
-    [self status:[NSString stringWithFormat:@"Bắt đầu import %lu phân cảnh...", (unsigned long)total]];
-
-    // Hook sẵn để nhận data khi QRCodeManager gọi về
-    [self importSceneAtIndex:0 start:start.unsignedIntegerValue total:total];
-}
-
-- (void)importSceneAtIndex:(NSUInteger)i start:(NSUInteger)start total:(NSUInteger)total {
-    if (i >= total) {
-        [self status:[NSString stringWithFormat:@"Hoàn tất %lu phân cảnh.", (unsigned long)total]];
-        return;
-    }
-    // Mở từng scene qua MultiLayerNavController native (best-effort)
-    Class navCls = NSClassFromString(@"MultiLayerNavController");
-    id project = HVCall0(HVTopVC(), @"project");
-    if (navCls && project) {
-        SEL initSel = NSSelectorFromString(@"initWithProject:sceneIndex:");
-        if ([navCls instancesRespondToSelector:initSel]) {
-            // Không có API public init dạng này — Video Star tạo qua storyboard
-            // Best-effort: báo người dùng mở tay cho tới khi có hook native
-            [self status:[NSString stringWithFormat:@"Mở tay phân cảnh %lu/%lu (native chưa hỗ trợ auto).",
-                          (unsigned long)(i + 1), (unsigned long)total]];
-        }
-    }
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 400 * NSEC_PER_MSEC),
-                   dispatch_get_main_queue(), ^{
-        [self importSceneAtIndex:i + 1 start:start total:total];
-    });
-}
-
-- (NSNumber *)kvcNum:(id)obj key:(NSString *)key {
-    @try { id v = [obj valueForKey:key]; if ([v isKindOfClass:NSNumber.class]) return v; }
-    @catch (__unused NSException *e) {}
-    return nil;
+    HV0_Void(vc, @"showMergeScenes");
+    [self status:@"Đã mở Hợp nhất phân cảnh"];
+    [self alert:@"Chọn phân cảnh"
+            msg:@"Chọn điểm bắt đầu và kết thúc trong panel Hợp nhất phân cảnh native, rồi bấm OK để bắt đầu nhập code/ảnh cho từng phân cảnh."];
 }
 
 #pragma mark - Alert
@@ -603,7 +627,9 @@ static void HVSaveLastQR(NSData *png) {
         UIAlertController *ac = [UIAlertController alertControllerWithTitle:title
                                                                     message:msg
                                                              preferredStyle:UIAlertControllerStyleAlert];
-        [ac addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+        [ac addAction:[UIAlertAction actionWithTitle:@"OK"
+                                               style:UIAlertActionStyleDefault
+                                             handler:nil]];
         [vc presentViewController:ac animated:YES completion:nil];
     });
 }
@@ -615,22 +641,20 @@ static IMP gOrigPickedIMP = NULL;
 + (void)installRuntimeHooks {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
-        // Hook pickedWithClipPickerResponse: trên MultiLayerWizEffectVC
         Class mlCls = NSClassFromString(@"MultiLayerWizEffectVC");
-        if (mlCls) {
-            SEL sel = NSSelectorFromString(@"pickedWithClipPickerResponse:");
-            Method m = class_getInstanceMethod(mlCls, sel);
-            if (m) {
-                gOrigPickedIMP = method_getImplementation(m);
-                IMP newIMP = imp_implementationWithBlock(^(id self, id response) {
-                    [[HVSonEngine shared] handlePickedResponse:response editor:self];
-                    if (gOrigPickedIMP) {
-                        ((void(*)(id, SEL, id))gOrigPickedIMP)(self, sel, response);
-                    }
-                });
-                method_setImplementation(m, newIMP);
+        if (!mlCls) return;
+        SEL sel = NSSelectorFromString(@"pickedWithClipPickerResponse:");
+        Method m = class_getInstanceMethod(mlCls, sel);
+        if (!m) return;
+
+        gOrigPickedIMP = method_getImplementation(m);
+        IMP newIMP = imp_implementationWithBlock(^(id self, id response) {
+            [[HVSonEngine shared] handlePickedResponse:response editor:self];
+            if (gOrigPickedIMP) {
+                ((void(*)(id, SEL, id))gOrigPickedIMP)(self, sel, response);
             }
-        }
+        });
+        method_setImplementation(m, newIMP);
     });
 }
 
