@@ -1,0 +1,72 @@
+name: Build
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build-dylib:
+    name: Build dylib
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ldid
+        run: brew install ldid 2>/dev/null || true
+
+      - name: Build dylib
+        run: |
+          set -e
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          mkdir -p build
+
+          MENU=$(find . -name "HVSonMenu.m"   -not -path "./.git/*" | head -1)
+          ENGINE=$(find . -name "HVSonEngine.m" -not -path "./.git/*" | head -1)
+          TWEAK=$(find . -name "HVSonTweak.m"  -not -path "./.git/*" | head -1)
+          INC=$(dirname "$MENU")
+
+          echo "MENU   = $MENU"
+          echo "ENGINE = $ENGINE"
+          echo "TWEAK  = $TWEAK"
+
+          if [ -z "$MENU" ] || [ -z "$ENGINE" ] || [ -z "$TWEAK" ]; then
+            echo "ERROR: Không tìm thấy file .m"
+            find . -name "*.m" -not -path "./.git/*"
+            exit 1
+          fi
+
+          for ARCH in arm64 arm64e; do
+            clang -c -fobjc-arc -O2 -arch $ARCH -mios-version-min=14.0 \
+              -isysroot "$SDK" -I"$INC" -Wno-deprecated-declarations \
+              "$MENU"   -o build/HVSonMenu-$ARCH.o
+            clang -c -fobjc-arc -O2 -arch $ARCH -mios-version-min=14.0 \
+              -isysroot "$SDK" -I"$INC" -Wno-deprecated-declarations \
+              "$ENGINE" -o build/HVSonEngine-$ARCH.o
+            clang -c -fobjc-arc -O2 -arch $ARCH -mios-version-min=14.0 \
+              -isysroot "$SDK" -I"$INC" -Wno-deprecated-declarations \
+              "$TWEAK"  -o build/HVSonTweak-$ARCH.o
+
+            clang -dynamiclib -fobjc-arc -O2 -arch $ARCH -mios-version-min=14.0 \
+              -isysroot "$SDK" \
+              -framework UIKit -framework Foundation -framework AVFoundation -framework CoreImage \
+              -install_name "@executable_path/HVSonTool.dylib" \
+              build/HVSonMenu-$ARCH.o build/HVSonEngine-$ARCH.o build/HVSonTweak-$ARCH.o \
+              -o build/HVSonTool-$ARCH.dylib
+          done
+
+          lipo -create build/HVSonTool-arm64.dylib build/HVSonTool-arm64e.dylib \
+            -output build/HVSonTool.dylib
+          ldid -S build/HVSonTool.dylib
+
+          mkdir -p out
+          cp build/HVSonTool.dylib out/
+          echo '{ Filter = { Bundles = ( "com.camerasideas.InstaShot" ); }; }' > out/HVSonTool.plist
+
+          lipo -info out/HVSonTool.dylib
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: HVSonTool
+          path: out/
